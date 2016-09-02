@@ -1,6 +1,43 @@
 import copy
 import json
 import requests
+import datetime
+import itertools
+from cached_property import cached_property
+
+
+class DataSetMeta(object):
+    def __init__(self, dataset_json, language, download_type):
+        self.raw_json = dataset_json
+        self.language = language
+        self.download_type = download_type
+
+    @property
+    def download_links(self):
+        result = []
+
+        for document in self.raw_json["documents"]["document"]:
+            if document["@type"] == self.download_type:
+                href = document["href"]
+                if href["@xml.lang"] == self.language:
+                    result.append(href["$"])
+
+        return result
+
+    @property
+    def publication_date(self):
+        # todo make this timezone aware
+        return datetime.datetime.strptime(
+            self.raw_json["publicationDate"][:10], "%Y-%m-%d"
+        )
+
+    @property
+    def summary(self):
+        # TODO strip the html that comes in with this
+        descriptions = (i["descriptions"]["description"] for i in self.raw_json["refMetadata"]["refMetadataItem"])
+        chained_descriptions = itertools.chain(*descriptions)
+        filtered = [i["$"] for i in chained_descriptions if i["@xml.lang"] == self.language]
+        return "\n".join(filtered)
 
 
 class API(object):
@@ -21,10 +58,6 @@ class API(object):
         api.get_data_set_details("Population Estimates for High Level Areas", since_date=last_year)
 
         assumes you want everything in english, parsing results as json and the download url as csv
-
-        if you wanted welsh  and the api the download type to be xls and the dataformat to be xml
-        you can do taht with
-        api = API(your_api_key, data_format='xml', language='cy', download_type='XLS')
     """
 
     API_ROOT = "http://data.ons.gov.uk/ons/api/data/"
@@ -34,8 +67,19 @@ class API(object):
     ):
         self.api_key = api_key
         self.data_format = data_format
+
+        # language can equal en, or cy (for Wales)
         self.language = language
         self.download_type = download_type
+
+    def _get_contexts(self):
+        lookup = "contexts"
+        content = self.query_api(lookup)
+        return [i["contextName"] for i in content['contextList']["statisticalContext"]]
+
+    @cached_property
+    def all_contexts(self):
+        return self._get_contexts()
 
     def construct_url(self, lookup):
         return "{0}{1}.{2}".format(self.API_ROOT, lookup, self.data_format)
@@ -52,20 +96,13 @@ class API(object):
         if return_empty_404s and result.status_code == 404:
             return []
 
-        try:
-            content = json.loads(result.content)
-        except:
-            import ipdb; ipdb.set_trace()
+        content = json.loads(result.content)
 
         if not result.status_code == 200:
             err_msg = 'Unable to access the api for {0} because of {1}'
             raise ValueError(err_msg, base_url, content)
         return content["ons"]
 
-    def get_contexts(self):
-        lookup = "contexts"
-        content = self.query_api(lookup)
-        return [i["contextName"] for i in content['contextList']["statisticalContext"]]
 
     def get_name(self, collection):
         names_list = collection["names"]["name"]
@@ -87,11 +124,7 @@ class API(object):
 
     def get_data_set_names(self, context=None, since_date=None):
         result = []
-
-        if context:
-            contexts = [context]
-        else:
-            contexts = self.get_contexts()
+        contexts = self.using_contexts(context)
 
         for context in contexts:
             data_sets = self.get_data_sets(context, since_date)
@@ -99,17 +132,17 @@ class API(object):
 
         return list(set(result))
 
-    def contexts(self, context):
+    def using_contexts(self, context):
         if context:
             contexts = [context]
         else:
-            contexts = self.get_contexts()
+            contexts = self.all_contexts
 
         return contexts
 
     def get_data_sets_from_name(self, name, context=None, since_date=None):
         result = []
-        contexts = self.contexts(context)
+        contexts = self.using_contexts(context)
         for context in contexts:
             data_sets = self.get_data_sets(context, since_date)
             for data_set in data_sets:
@@ -120,7 +153,7 @@ class API(object):
     def get_data_set_details(
         self, data_set_name, context=None, since_date=None
     ):
-        contexts = self.contexts(context)
+        contexts = self.using_contexts(context)
         result = []
 
         for context in contexts:
@@ -134,21 +167,12 @@ class API(object):
                 data_set_meta = self.query_api(
                     'datasetdetails/{}'.format(data_set["id"]), query_params
                 )
-                result.extend(
-                    data_set_meta["datasetDetail"]["documents"]["document"]
+                result.append(
+                    DataSetMeta(data_set_meta["datasetDetail"], self.language, self.download_type)
                 )
 
         return result
 
     def get_download_links(self, data_set_name, context=None, since_date=None):
-        details = self.get_data_set_details(data_set_name, context, since_date)
-
-        result = []
-
-        for document in details:
-            if document["@type"] == self.download_type:
-                href = document["href"]
-                if href["@xml.lang"] == self.language:
-                    result.append(href["$"])
-
-        return result
+        data_set_metas = self.get_data_set_details(data_set_name, context, since_date)
+        return list(itertools.chain(*(i.download_links for i in data_set_metas)))
