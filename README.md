@@ -11,12 +11,12 @@ get a list of all data set names
     api.get_data_set_names()
 ```
 
-get the specific list of hrefs for the datasets you're interested in
+get the specific list of download links for the datasets you're interested in
 ```python
     api.get_data_set_details("Population Estimates for High Level Areas")
 ```
 
-get the specific list of hrefs since a certain date
+get the specific list of download links since a certain date
 ```python
     last_year = date.today() - timedelta(years=1)
     api.get_data_set_details("Population Estimates for High Level Areas", since_date=last_year)
